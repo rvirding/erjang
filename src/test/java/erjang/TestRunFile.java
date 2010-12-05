@@ -22,6 +22,7 @@ package erjang;
 import java.io.File;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
 
 import erjang.beam.Compiler;
 import erjang.EObject;
@@ -35,7 +36,7 @@ import erjang.beam.loader.ErjangBeamDisLoader;
 
 import erjang.m.erlang.ErlConvert;
 
-import junit.framework.Test;
+import junit.framework.TestCase;
 import junit.framework.TestResult;
 import junit.framework.Assert;
 import junit.framework.AssertionFailedError;
@@ -45,11 +46,12 @@ import kilim.Mailbox;
 /**
  * 
  */
-public class TestRunFile implements Test {
+public class TestRunFile extends TestCase {
 
-	static final String OTP_HOME = "/Users/krab/Projects/otp";
-	static final String ERLC_PRG = "/sw/bin/erlc";
-	static final String ERL_PRG  = "/sw/bin/erl";
+	static final String OTP_HOME = ErjangConfig.getString("erjang.otp.root");
+	static final String ERTS_VSN = ErjangConfig.getString("erjang.erts.version");
+	static final String ERLC_PRG = OTP_HOME + File.separator + "bin" + File.separator + "erlc";
+	static final String ERL_PRG  = OTP_HOME + File.separator + "bin" + File.separator + "erl";
 
 	static final EAtom ERJANG_ATOM = EAtom.intern("erjang");
 	static final EAtom ERLANG_ATOM = EAtom.intern("erlang");
@@ -68,10 +70,19 @@ public class TestRunFile implements Test {
 	 * @param file
 	 */
 	public TestRunFile(File file) {
+		super(file.getName());
 		this.file = file;
 		
-		System.setProperty("erjpath", OTP_HOME + "/erts/preloaded/ebin"
-							+ ":" + OTP_HOME + "/lib/stdlib/ebin");
+		String path1 = OTP_HOME + File.separator + "erts" + File.separator
+				+ "preloaded" + File.separator + "ebin";
+		String path2 = OTP_HOME + File.separator + "lib" + File.separator
+				+ "erts-" + ERTS_VSN + File.separator + "ebin";
+		String path3 = OTP_HOME + File.separator + "lib" + File.separator
+				+ "stdlib" + File.separator + "ebin";
+		System.setProperty("erjang.path",
+						   path1 + File.pathSeparator +
+						   path2 + File.pathSeparator +
+						   path3);
 	}
 
 
@@ -114,10 +125,10 @@ public class TestRunFile implements Test {
 			EAtom module = EAtom.intern(moduleName);
 
 			EProc p = new EProc(null, RUN_WRAPPER_ATOM, RUN_WRAPPER_ATOM, EList.make(EList.make(ERJANG_ATOM, module)));
-			ERT.run(p);
-			
 	        Mailbox<ExitMsg> mb = new Mailbox<ExitMsg>();
 	        p.informOnExit(mb);
+			ERT.run(p);
+			
 	        ExitMsg exit = mb.getb(20*1000); // 20sec
 	        Assert.assertNotNull("process timed out?", exit);
 	        
@@ -146,6 +157,7 @@ public class TestRunFile implements Test {
 		String moduleName = trimExtension(file.getName());
 		String[] cmd = new String[] {ERL_PRG, "-noinput",
 					     "-pa", BEAM_DIR,
+						 "-sasl", "sasl_error_logger", "false", // Prevent SASL from polluting stdout
 					     "-s", "run_wrapper", "run_wrapper", "erlang", moduleName,
 					     "-s", "erlang", "halt"};
 		byte[] bin = execGetBinaryOutput(cmd);
@@ -165,38 +177,45 @@ public class TestRunFile implements Test {
 	private byte[] execGetBinaryOutput(String[] cmd) throws Exception {
 		Runtime rt = Runtime.getRuntime();
 		Process p = rt.exec(cmd);
-		ByteArrayOutputStream output = new ByteArrayOutputStream();
-		ByteArrayOutputStream err    = new ByteArrayOutputStream();
+		OutputCollectorThread outThread = new OutputCollectorThread(p.getInputStream());
+		OutputCollectorThread errThread = new OutputCollectorThread(p.getErrorStream());
+		outThread.start();
+		errThread.start();
+		outThread.join();
+		errThread.join();
+		int exitCode = p.waitFor();
+		if (exitCode != 0) {
+			System.err.println("Exitcode="+exitCode+" for "+cmd[0]);
+			System.err.println("Err//output="+new String(errThread.getResult())+"//"+new String(outThread.getResult()));
+		}
+		assert(exitCode == 0);
+
+		return outThread.getResult();
+	}
+
+	static class OutputCollectorThread extends Thread {
+		InputStream in;
+		ByteArrayOutputStream acc = new ByteArrayOutputStream();
 		byte[] buf = new byte[1024];
-		InputStream stdout = p.getInputStream();
-		InputStream stderr = p.getInputStream();
-		while (true) {
-			int len;
+		public OutputCollectorThread(InputStream in) {
+			this.in = in;
+		}
+
+		@Override public void run() {
 			try {
-				boolean change;
-				do {
-					change = false;
-					while ((len = stdout.read(buf)) > 0) {
-						output.write(buf, 0, len);
-						change = true;
-					}
-					while ((len = stderr.read(buf)) > 0) {
-						err.write(buf, 0, len);
-						change = true;
-					}
-				} while (change);
-				int exitCode = p.waitFor();
-				if (exitCode != 0) {
-					System.err.println("Exitcode="+exitCode+" for "+cmd[0]);
-					System.err.println("Err//output="+err+"//"+output);
+				int len;
+				while ((len = in.read(buf)) > 0) {
+					acc.write(buf, 0, len);
 				}
-				assert(exitCode == 0);
-				break;
-			} catch (InterruptedException ie) {
-				System.err.println("IE="+ie);
+			} catch (IOException ioe) {
+				System.err.println("I/O error: "+ioe);
+				try { in.close(); } catch (IOException ioe2) {}
 			}
 		}
-		return output.toByteArray();
+
+		public byte[] getResult() {
+			return acc.toByteArray();
+		}
 	}
 
 
