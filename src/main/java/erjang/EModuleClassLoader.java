@@ -28,7 +28,7 @@ import java.net.URLClassLoader;
  * Each module has it's own class loader.
  */
 public class EModuleClassLoader extends URLClassLoader {
-
+	
 	/**
 	 * @param urls
 	 */
@@ -50,7 +50,7 @@ public class EModuleClassLoader extends URLClassLoader {
 
 	String ETUPLE_NAME = ETuple.class.getName();
 	String EFUN_NAME = EFun.class.getName();
-
+	
 	/*
 	 * (non-Javadoc)
 	 * 
@@ -58,7 +58,6 @@ public class EModuleClassLoader extends URLClassLoader {
 	 */
 	@Override
 	protected Class<?> findClass(String name) throws ClassNotFoundException {
-
 		if (name.startsWith(ETUPLE_NAME)) {
 			int arity = Integer.parseInt(name.substring(ETUPLE_NAME.length()));
 			return ETuple.get_tuple_class(arity);
@@ -70,8 +69,9 @@ public class EModuleClassLoader extends URLClassLoader {
 		}
 		
 		if (name.startsWith("kilim.S_")) {
-			String classFileName = name.replace('.', File.separatorChar) + ".class";
-			InputStream resource = super.getResourceAsStream(classFileName);
+			/* Resource names are '/'-separated, no matter the platform. */
+			String classResourceName = name.replace('.', '/') + ".class";
+			InputStream resource = super.getResourceAsStream(classResourceName);
 
 			if (resource == null) {
 				throw new ClassNotFoundException(name, new Error("while loading "+this.getURLs()[0]));
