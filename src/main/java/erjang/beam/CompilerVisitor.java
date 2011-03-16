@@ -93,6 +93,10 @@ import erjang.m.erlang.ErlBif;
  */
 public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	public static boolean PARANOIA_MODE = false;
+	
+	// a select ins with up to this many cases that are all
+	// atom values is just encoded as an if-then-else-etc.
+	public static final int ATOM_SELECT_IF_ELSE_LIMIT = 4;
 
 	ECons atts = ERT.NIL;
 	private Set<String> exported = new HashSet<String>();
@@ -330,7 +334,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 		mv.visitMaxs(1, 1);
 		mv.visitEnd();
 
-		// make the method module_name
+		// make the method attributes
 		mv = cv.visitMethod(ACC_PROTECTED, "attributes",
 				"()" + ESEQ_TYPE.getDescriptor(), null, null);
 		mv.visitCode();
@@ -441,6 +445,15 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	Set<String> non_pausable_methods = new HashSet<String>();
 
 	public EBinary module_md5;
+
+	private static final String SEQ_CONS_SIG = "(" + EOBJECT_DESC + ")"
+		+ ESEQ_DESC;
+	private static final String FUNC_INFO_SIG = "(" + EATOM_DESC + EATOM_DESC + ESEQ_DESC +")"
+		+ EOBJECT_DESC;
+	private static final String ERT_CONS_SIG = "(" + EOBJECT_DESC + EOBJECT_DESC + ")"
+		+ ECONS_TYPE.getDescriptor();
+	private static final String TEST_FUN_SIG ="(" + EOBJECT_DESC + EFUN_DESCRIPTOR + ")V";
+
 
 	class ASMFunctionAdapter implements FunctionVisitor2 {
 		private final EAtom fun_name;
@@ -572,6 +585,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 			String full_inner_name = outer_name + "$" + inner_name;
 
 			boolean make_fun = false;
+			boolean is_exported = isExported(fun_name, arity);
 			if (lambda != null) {
 				CompilerVisitor.this.module_md5 = lambda.uniq;
 				make_fun = true;
@@ -588,7 +602,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 							"L" + full_inner_name + ";", null, null);
 					EFun.ensure(arity);
 	
-					if (isExported(fun_name, arity)) {
+					if (is_exported) {
 						if (ERT.DEBUG2)
 							System.err.println("export " + module_name + ":"
 									+ fun_name + "/" + arity);
@@ -614,17 +628,25 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 			cv.visitInnerClass(full_inner_name, outer_name, inner_name,
 					ACC_STATIC);
 
-			byte[] data = CompilerVisitor.make_invoker(module_name.getName(), self_type, mname, mname,
-					arity, true, lambda, EOBJECT_TYPE, funInfo.may_return_tail_marker, funInfo.is_pausable|funInfo.call_is_pausable);
+			byte[] data = CompilerVisitor.make_invoker(module_name.getName(), fun_name.getName(), self_type, mname, mname,
+					arity, true, is_exported, lambda, EOBJECT_TYPE, funInfo.may_return_tail_marker, funInfo.is_pausable|funInfo.call_is_pausable);
 
 			ClassWeaver w = new ClassWeaver(data, new Compiler.ErjangDetector(
 					self_type.getInternalName(), non_pausable_methods));
-			for (ClassInfo ci : w.getClassInfos()) {
+			if (w.getClassInfos().size() == 0) { // Class did not need weaving
 				try {
-					// System.out.println("> storing "+ci.className);
-					classRepo.store(ci.className, ci.bytes);
+					classRepo.store(full_inner_name, data);
 				} catch (IOException e) {
 					e.printStackTrace();
+				}
+			} else {
+				for (ClassInfo ci : w.getClassInfos()) {
+					try {
+					// System.out.println("> storing "+ci.className);
+						classRepo.store(ci.className, ci.bytes);
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
 				}
 			}
 			
@@ -1763,9 +1785,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 				case put_list:
 					push(in[0], EOBJECT_TYPE);
 					push(in[1], EOBJECT_TYPE);
-					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "cons", "("
-							+ EOBJECT_DESC + EOBJECT_DESC + ")"
-							+ ECONS_TYPE.getDescriptor());
+					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "cons", ERT_CONS_SIG);
 					pop(out, ECONS_TYPE);
 					return;
 				case call_fun: {
@@ -1782,7 +1802,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 					
 					mv.visitInsn(DUP_X1);
 					
-					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "test_fun", "(" + EOBJECT_DESC + EFUN_DESCRIPTOR + ")V");
+					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "test_fun", TEST_FUN_SIG);
 
 					mv.visitVarInsn(ALOAD, 0); // load proc
 					for (int i = 0; i < nargs; i++) {
@@ -2053,13 +2073,10 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 					push_immediate(ERT.NIL, ENIL_TYPE);
 					for (int i=f.arity-1; i>=0; i--) {
 						push(new Arg(Kind.X, i), EOBJECT_TYPE);
-						mv.visitMethodInsn(INVOKEVIRTUAL, ESEQ_NAME, "cons", "("
-										   + EOBJECT_DESC + ")"
-										   + ESEQ_DESC);
+						mv.visitMethodInsn(INVOKEVIRTUAL, ESEQ_NAME, "cons", SEQ_CONS_SIG);
 					}
 
-					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "func_info", "("
-							+ EATOM_DESC + EATOM_DESC + ESEQ_DESC +")" + EOBJECT_DESC);
+					mv.visitMethodInsn(INVOKESTATIC, ERT_NAME, "func_info", FUNC_INFO_SIG);
 					mv.visitInsn(ARETURN);
 					return;
 				}//switch
@@ -2543,6 +2560,34 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 					return;
 				}
 
+				if (values.length < ATOM_SELECT_IF_ELSE_LIMIT) {
+					boolean all_atoms = true;
+					for (int i = 0; i < values.length; i++) {
+						if (!(values[i].value instanceof EAtom)) {
+							all_atoms = false;
+							break;
+						}
+					}
+				
+					if (all_atoms) {
+						
+						for (int i = 0; i < values.length; i++) {
+
+							push(in, in.type);
+							push(values[i], values[i].type);
+							mv.visitJumpInsn(IF_ACMPEQ, getLabel(targets[i]));
+
+						}
+						
+						mv.visitJumpInsn(GOTO, getLabel(failLabel));
+						
+						return;
+					}
+				
+
+				}
+				
+
 				class Case implements Comparable<Case> {
 
 					final Arg arg;
@@ -2992,8 +3037,9 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 		return lambdas_xx.get(new FunID(module_name, fun, arity_plus));
 	}
 
-	static public byte[] make_invoker(String module, Type self_type, String mname,
-			String fname, int arity, boolean proc, Lambda lambda,
+	static public byte[] make_invoker(String module, String function,
+			Type self_type, String mname,
+			String fname, int arity, boolean proc, boolean exported, Lambda lambda,
 			Type return_type, boolean is_tail_call, final boolean is_pausable) {
 
 		int freevars = lambda==null ? 0 : lambda.freevars;
@@ -3003,8 +3049,12 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 		String full_inner_name = outer_name + "$" + inner_name;
 
 		ClassWriter cw = new ClassWriter(true);
-		String super_class_name = EFUN_NAME + (arity - freevars);
-		EFun.ensure(arity - freevars);
+		int residual_arity = arity - freevars;
+		String super_class_name = EFUN_NAME + residual_arity +
+			(exported ? "Exported" : "");
+		if (exported) EFun.ensure_exported(residual_arity);
+		else EFun.ensure(residual_arity);
+
 		cw.visit(V1_6, ACC_FINAL | ACC_PUBLIC, full_inner_name, null,
 				super_class_name, null);
 
@@ -3062,13 +3112,9 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 			mv.visitEnd();
 		}
 		
-		make_constructor(cw, full_inner_name, super_class_name, lambda);
+		make_constructor(cw, module, function,
+						 full_inner_name, super_class_name, lambda, exported);
 
-		make_invoke_method(cw, outer_name, fname, arity, proc, freevars,
-				return_type, is_tail_call);
-		
-		// make_invoketail_method(cw, full_inner_name, arity, freevars);
-		
 		make_go_method(cw, outer_name, fname, full_inner_name, arity, proc,
 				freevars, return_type, is_tail_call, is_pausable);
 
@@ -3080,7 +3126,8 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	}
 
 	private static void make_constructor(ClassWriter cw,
-			String full_inner_name, String super_class_name, Lambda lambda) {
+			String module_name, String function_name,
+			String full_inner_name, String super_class_name, Lambda lambda, boolean exported) {
 		StringBuilder sb = new StringBuilder("(");
 		int freevars = lambda==null?0:lambda.freevars;
 		if (lambda != null) {
@@ -3100,7 +3147,13 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 		mv.visitCode();
 
 		mv.visitVarInsn(ALOAD, 0);
-		mv.visitMethodInsn(INVOKESPECIAL, super_class_name, "<init>", "()V");
+		if (exported) {
+			mv.visitLdcInsn(module_name);
+			mv.visitLdcInsn(function_name);
+			mv.visitMethodInsn(INVOKESPECIAL, super_class_name, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+		} else {
+			mv.visitMethodInsn(INVOKESPECIAL, super_class_name, "<init>", "()V");
+		}
 
 		if (lambda != null) {
 			mv.visitVarInsn(ALOAD, 0);

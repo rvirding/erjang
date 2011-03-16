@@ -61,6 +61,17 @@ public final class ERef extends EObject {
         this.ids[0] &= 0x3ffff; // only 18 significant bits in first number
 	}
 
+	public ERef(EAtom node, int id1, int id2, int id3, int creation) {
+        this.node = node;
+        this.creation = creation & 0x03; // 2 bits
+
+        // use at most 82 bits (18 + 32 + 32)
+        this.ids = new int[3];
+        this.ids[0] = id1 & 0x3ffff; // only 18 significant bits in first number
+        this.ids[1] = id2;
+        this.ids[2] = id3;
+	}
+
 	/**
 	 * @param node
 	 * @param id
@@ -132,7 +143,7 @@ public final class ERef extends EObject {
     	// System.err.println("equals "+this+" =:= "+rhs+"  ==> "+val);
     	return val;
 	}
-    
+
     public boolean equals2(final Object o) {
     	
         if (!(o instanceof ERef)) {
@@ -145,6 +156,7 @@ public final class ERef extends EObject {
             return false;
         }
 
+		// TODO: Compare the isNewRef()s ?
         if (isNewRef() && ref.isNewRef()) {
             return ids[0] == ref.ids[0]
                 && ids[1] == ref.ids[1]
@@ -154,7 +166,20 @@ public final class ERef extends EObject {
         return ids[0] == ref.ids[0];
     }
 
-	
+	@Override
+	public int hashCode() {
+		int res =
+			500000003  * node.hashCode() +
+			1000000007 * creation +
+			1500000001 * ids[0];
+		if (isNewRef()) {
+			res +=
+				ids[1] * 250000013 +
+				ids[2] * 750000007;
+		}
+		return res;
+	}
+
 	@Override
 	int cmp_order() {
 		return CMP_ORDER_REFERENCE;

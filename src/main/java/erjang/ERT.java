@@ -177,8 +177,7 @@ public class ERT {
 	 */
 	@SuppressWarnings("unchecked")
 	public static <T> Class<? extends T> defineClass(ClassLoader classLoader,
-			String name, byte[] data, int i, int length) {
-
+			String name, byte[] data) {
 		/*
 		 * Class<? extends ETuple> res = (Class<? extends ETuple>)
 		 * loader2.define(name, data);
@@ -198,8 +197,8 @@ public class ERT {
 		return res;
 	}
 
-	public static ESmall box(int i) {
-		return new ESmall(i);
+	public static ESmall box(int v) {
+		return ESmall.make(v);
 	}
 
 	/**
@@ -215,7 +214,7 @@ public class ERT {
 
 		int intVal = (int) longVal;
 		if (longVal == (long) intVal) {
-			return new ESmall(intVal);
+			return ESmall.make(intVal);
 		} else {
 			return new EBig(longVal);
 		}
@@ -226,7 +225,7 @@ public class ERT {
 		int intVal = (int)longVal;
 		
 		if (intVal == longVal) {
-			return new ESmall(intVal);
+			return ESmall.make(intVal);
 		} else {
 			return new EBig(longVal);
 		}
@@ -243,7 +242,7 @@ public class ERT {
 
 	static BigInteger INT_MIN_AS_BIG = BigInteger.valueOf(Integer.MIN_VALUE);
 	static BigInteger INT_MAX_AS_BIG = BigInteger.valueOf(Integer.MAX_VALUE);
-	private static ENode localNode = new ENode();
+	private static final ENode localNode = new ENode();
 
 	/**
 	 * @param add
@@ -257,7 +256,7 @@ public class ERT {
 		if (res.compareTo(INT_MAX_AS_BIG) > 0)
 			return new EBig(res);
 
-		return new ESmall(res.intValue());
+		return ESmall.make(res.intValue());
 	}
 
 	/**
@@ -321,10 +320,12 @@ public class ERT {
 	protected static final EAtom am_new = EAtom.intern("new");
 
 	public static EBitStringBuilder bs_init(int size, int flags) {
+		if (size<0) throw ERT.badarg();
 		return new EBitStringBuilder(size, flags);
 	}
 
 	public static EBitStringBuilder bs_initBits(int size, int flags) {
+		if (size<0) throw ERT.badarg();
 		return new EBitStringBuilder(size/8, size%8, flags);
 	}
 
@@ -341,8 +342,13 @@ public class ERT {
 	}
 
 	public static void test_fun(EObject orig, EFun fun) {
-		if (fun == null)
-			throw new ErlangError(am_badfun, orig);
+		if (fun == null) {
+			if ((orig.testFunction()) != null) {
+				throw new ErlangError(new ETuple2(am_badarity, new ETuple2(orig, NIL)));
+			} else {
+				throw new ErlangError(am_badfun, orig);
+			}
+		}
 	}
 	
 	static EInteger max_send_time = ERT.box(4294967295L);
@@ -485,113 +491,103 @@ public class ERT {
 	 * @throws Pausable
 	 */
 	@BIF(name = "!")
-	public static EObject send(EProc proc, EObject pid, EObject msg)
-			throws Pausable {
-		// TODO handle ports also?
-		proc.check_exit();
-		
-		//System.out.println(""+proc+" :: "+pid+" ! "+msg);
-
-		EHandle p;
-		if ((p = pid.testHandle()) != null) {
-			proc.reds += p.send(proc.self_handle(), msg);
-			if (proc.reds > 1000) {
-				proc.reds = 0;
-				Task.yield();
-			}
-			return msg;
-		}
-
-		EAtom name;
-		ETuple tup;
-		EAtom node;
-		if ((tup=pid.testTuple()) != null 
-			&& tup.arity()==2 
-			&& (name=tup.elm(1).testAtom()) != null
-			&& (node=tup.elm(2).testAtom()) != null){
-			
-			if (node == getLocalNode().node) {
-				// ok, we're talking to ourselves
-				
-				pid = name;
-			} else {
-
-				System.err.println("sending msg "+pid+" ! "+msg);
-				
-				EAbstractNode peer = EPeer.get(node);
-				if (peer == null) {
-					return erlang__dsend__2.invoke(proc, new EObject[] { pid, msg });
-				} else {				
-					return peer.dsig_reg_send(proc.self_handle(), name, msg);
-				}
-			}
-		}
-
-		if ((name=pid.testAtom()) != null) {
-			p = register.get(name);
-			if (p != null) {
-				proc.reds += p.send(proc.self_handle(), msg);
-				if (proc.reds > 1000) {
-					proc.reds = 0;
-					Task.yield();
-				}
-				return msg;
-			}
-		}
-
-		throw badarg(pid, msg);				
-	}
-
-	@BIF
-	public static EObject send(EProc proc, EObject pid, EObject msg,
-			EObject options) throws Pausable {
+	public static EObject send(EProc proc, EObject pid, EObject msg) throws Pausable {
 		// TODO handle ports also?
 		proc.check_exit();
 
 		// log.log(Level.FINER, "ignored options to send: " + options);
-		
+
 		EHandle p;
+		EAtom reg_name;
 		if ((p = pid.testHandle()) != null) {
-			p.send(proc.self_handle(), msg);
-			return am_ok;
-		}
-
-		ETuple t;
-		if ((t = pid.testTuple()) != null 
-				&& t.arity()==2) {
-			
-			EAtom reg_name;
+			send_to_handle(proc, p, msg);
+		} else if ((reg_name = pid.testAtom()) != null) {
+			send_to_locally_registered(proc, reg_name, msg);
+		} else {
+			ETuple t;
 			EAtom node_name;
-			if ((reg_name = t.elm(1).testAtom()) != null
-			 && (node_name = t.elm(2).testAtom()) != null) {
-				
-				if (node_name == getLocalNode().node) {
-					// ok, we're talking to ourselves
-					
-					pid = reg_name;
-				} else {
-					System.err.println("sending msg "+pid+" ! "+msg);
-	
-					EAbstractNode node = EPeer.get(node_name);
-					if (node == null) {
-						return erlang__dsend__3.invoke(proc, new EObject[] { pid, msg, options });
-					} else {
-						node.dsig_reg_send(proc.self_handle(), reg_name, msg);
-						return am_ok;
-					}
-				}
+			if ((t = pid.testTuple()) != null && t.arity()==2 &&
+				(reg_name = t.elm(1).testAtom()) != null &&
+				(node_name = t.elm(2).testAtom()) != null)
+			{
+				send_to_remote(proc, t, node_name, reg_name, msg, null);
+			} else { // PID was of a bad type.
+				log.info("trying to send message to "+pid+" failed.");
+				throw badarg(pid, msg);
 			}
-			
 		}
-		
-		p = register.get(pid);
-		if (p != null) {
-			p.send(proc.self_handle(), msg);
-			return am_ok;
-		}
+		// Arguments were of valid types; return the message:
+		return msg;
+	}
 
-		log.info("trying to send message to "+pid+" failed.");			
-		throw badarg(pid, msg);
+	@BIF
+	public static EObject send(EProc proc, final EObject pid, final EObject msg, EObject options) throws Pausable {
+		// TODO handle ports also?
+		proc.check_exit();
+
+		// log.log(Level.FINER, "ignored options to send: " + options);
+
+		EHandle handle;
+		EAtom reg_name;
+		if ((handle = pid.testHandle()) != null) {
+			send_to_handle(proc, handle, msg);
+			return am_ok;
+		} else if ((reg_name = pid.testAtom()) != null) {
+			boolean ok = send_to_locally_registered(proc, reg_name, msg);
+			if (ok) return am_ok;
+			else throw badarg(pid, msg);
+		} else {
+			ETuple t;
+			EAtom node_name;
+			if ((t = pid.testTuple()) != null && t.arity()==2 &&
+				(reg_name = t.elm(1).testAtom()) != null &&
+				(node_name = t.elm(2).testAtom()) != null)
+			{
+				return send_to_remote(proc, t, node_name, reg_name, msg, options);
+			} else { // PID was of a bad type.
+				log.info("trying to send message to "+pid+" failed.");
+				throw badarg(pid, msg);
+			}
+		}
+	}
+
+	private static EObject send_to_remote(EProc proc, ETuple dest, EAtom node_name, EAtom reg_name, EObject msg, EObject options) throws Pausable {
+		// INVARIANT: t == ETuple.make(node_name, reg_name)
+
+		if (node_name == getLocalNode().node) { // We're talking to ourselves
+			send_to_locally_registered(proc, reg_name, msg);
+			return am_ok; // Even if the process does not exist.
+			//TODO: Return 'noconnect' if options contain noconnect?...
+		} else { // We're talking to another node
+			System.err.println("sending msg "+dest+" ! "+msg);
+
+			EAbstractNode node = EPeer.get(node_name);
+			if (node == null) {
+				EObject[] args = (options!=null
+								  ? new EObject[] { dest, msg, options }
+								  : new EObject[] { dest, msg });
+				return erlang__dsend__3.invoke(proc, args);
+			} else {
+				node.dsig_reg_send(proc.self_handle(), reg_name, msg);
+				return am_ok;
+			}
+		}
+	}
+
+	private static boolean send_to_locally_registered(EProc proc, EAtom name, EObject msg) throws Pausable {
+		EHandle handle;
+		if ((handle = register.get(name)) != null) {
+			send_to_handle(proc, handle, msg);
+			return true;
+		} else return false;
+	}
+
+	private static void send_to_handle(EProc proc, EHandle handle, EObject msg) throws Pausable {
+		proc.reds += handle.send(proc.self_handle(), msg);
+		if (proc.reds > 1000) {
+			proc.reds = 0;
+			Task.yield();
+		}
 	}
 
 	/**
@@ -614,7 +610,7 @@ public class ERT {
 	public static EFun resolve_fun(EObject mod, EObject fun, int arity) {
 		EAtom f = fun.testAtom();
 		if (f == null) {
-			throw ERT.badarg(mod, fun, new ESmall(arity));
+			throw ERT.badarg(mod, fun, ESmall.make(arity));
 		}
 
 		JavaObject jo;
@@ -646,7 +642,7 @@ public class ERT {
 				
 			}
 			
-			throw ERT.badarg(mod, fun, new ESmall(arity));
+			throw ERT.badarg(mod, fun, ESmall.make(arity));
 		}
 		EFun efun = EModuleManager.resolve(new FunID(m, f, arity));
 
@@ -789,6 +785,7 @@ public class ERT {
 	public static EAtom am_attributes = EAtom.intern("attributes");
 	public static EAtom am_exports = EAtom.intern("exports");
 	public static EAtom am_badfun = EAtom.intern("badfun");
+	public static EAtom am_badarity = EAtom.intern("badarity");
 
 	public static EAtom am_name = EAtom.intern("name");
 	public static EAtom am_arity = EAtom.intern("arity");
@@ -929,10 +926,6 @@ public class ERT {
 		return i.intValue();
 	}
 
-	public static double unboxToDouble(EInteger i) {
-		return i.doubleValue();
-	}
-
 	public static int unboxToInt(EObject i) {
 		ESmall ii;
 		if ((ii = i.testSmall()) == null)
@@ -942,6 +935,10 @@ public class ERT {
 
 	public static int unboxToInt(ENumber i) {
 		return i.intValue();
+	}
+
+	public static double unboxToDouble(EInteger i) {
+		return i.doubleValue();
 	}
 
 	public static double unboxToDouble(ENumber i) {
@@ -957,6 +954,12 @@ public class ERT {
 
 	public static double unboxToDouble(int i) {
 		return i;
+	}
+
+	public static Boolean asBoolean(EObject obj) {
+		if (obj == ERT.TRUE) return true;
+		if (obj == ERT.FALSE) return false;
+		return null;
 	}
 
 	public static void check_exit(EProc p) {

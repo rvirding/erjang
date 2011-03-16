@@ -59,6 +59,7 @@
 	{function, %% The name of the function implementing the micro
 	 weight,   %% How important is this in typical applications ??
 	 loops = 100,%% initial data
+	 outer_loops = 1,  %% Iteration multiplier, for stability of measurement
 	 tt1,      %% time to do one round
 	 str}).    %% Header string
 
@@ -86,7 +87,7 @@ estone(Config) when is_list(Config) ->
     ?line {Total, Stones} = sum_micros(L, 0, 0),
     ?line pp(Mhz,Total,Stones,L),
     ?line {comment,Mhz ++ " MHz, " ++ 
-	   integer_to_list(Stones) ++ " ESTONES"}.
+	   lists:flatten(io_lib:format("~.2f", [Stones])) ++ " ESTONES"}.
 
 %%
 %% Calculate CPU speed
@@ -146,7 +147,7 @@ pp(Mhz,Total,Stones,Ms) ->
     io:format("EStone test completed~n",[]),
     io:format("**** CPU speed ~s MHz ****~n",[Mhz]),
     io:format("**** Total time ~w seconds ****~n", [Total / 1000000]),
-    io:format("**** ESTONES = ~w ****~n~n", [Stones]),
+    io:format("**** ESTONES = ~.2f ****~n~n", [Stones]),
     io:format("~-31s      ~-12s  ~-10s   %    ~-10s ~n~n",
 	      ["    Title", "Millis", "Estone", "Loops"]),
     erlang:display({'ESTONES', Stones}),
@@ -158,9 +159,9 @@ sum_micros([H|T], Tot, Sto) ->
 
 pp2([]) ->   ok;
 pp2([R|Tail]) ->
-    io:format("~-35s  ~-12w    ~-10w   ~-2w    ~-10w ~n",
+    io:format("~-28s  ~12.2f    ~10.2f   ~2b    ~10b~n",
 	      [ks(title,R), 
-	       round(ks(microsecs, R) / 1000), 
+	       ks(microsecs, R) / 1000, 
 	       ks(estones, R),
 	       ks(weight_percentage, R),
 	       ks(loops, R)]),
@@ -178,6 +179,7 @@ micro(lists) ->
      #micro{function = lists,
 	    weight = 7, 
 	    loops = 6400,
+	    outer_loops = 5,
 	    str = "list manipulation"};
 micro(msgp) ->
     #micro{function = msgp,
@@ -193,18 +195,21 @@ micro(msgp_huge) ->
     #micro{function = msgp_huge,
 	    weight = 4,
 	    loops = 52,
+	    outer_loops = 25,
 	    str = "huge messages"};
 
 micro(pattern) ->
     #micro{function = pattern,
 	    weight = 5,
 	    loops = 1046,
+	    outer_loops = 5,
 	    str = "pattern matching"};
 
 micro(trav) ->
     #micro{function = trav,
 	    weight = 4,
 	    loops = 2834,
+	    outer_loops = 3,
 	    str = "traverse"};
 
 micro(port_io) ->
@@ -217,24 +222,28 @@ micro(large_dataset_work) ->
     #micro{function = large_dataset_work,
 	   weight = 3,
 	   loops = 1193,
+	   outer_loops = 3,
 	   str = "Work with large dataset"};
 
 micro(large_local_dataset_work) ->
     #micro{function = large_local_dataset_work,
 	   weight = 3,
 	   loops = 1174,
+	   outer_loops = 3,
 	   str = "Work with large local dataset"};
 
 micro(alloc) ->
     #micro{function = alloc,
 	   weight = 2,
 	   loops = 3710,
+	   outer_loops = 10,
 	   str = "Alloc and dealloc"};
 
 micro(bif_dispatch) ->
     #micro{function = bif_dispatch,
 	   weight = 5,
 	   loops = 1623,
+	   outer_loops = 2,
 	   str = "Bif dispatch"};
 
 micro(binary_h) ->
@@ -256,11 +265,13 @@ micro(int_arith) ->
     #micro{function = int_arith,
 	   weight = 3,
 	   loops = 4157,
+	   outer_loops = 5,
 	   str = "Small Integer arithmetics"};
 micro(float_arith) ->
     #micro{function = float_arith,
 	   weight = 1,
 	   loops = 5526,
+	    outer_loops = 100,
 	   str = "Float arithmetics"};
 micro(fcalls) ->
     #micro{function = fcalls,
@@ -272,12 +283,14 @@ micro(timer) ->
     #micro{function = timer,
 	   weight = 2,
 	   loops = 2312,
+	   outer_loops = 2,
 	   str = "Timers"};
 
 micro(links) ->
     #micro{function = links,
 	   weight = 1,
 	   loops = 30,
+	   outer_loops = 15,
 	   str = "Links"}.
 
 
@@ -340,22 +353,22 @@ apply_micro(M) ->
     statistics(reductions),
     Before = erlang:now(),
 
-    Compensate = apply_micro(M#micro.function, M#micro.loops),
+    Compensate = apply_micro(M#micro.function, M#micro.loops * M#micro.outer_loops),
     After = erlang:now(),
     {GC1, Words1, _} = statistics(garbage_collection),
     {_, Reds} = statistics(reductions),
     Elapsed = subtr(Before, After),
-    MicroSecs = Elapsed - Compensate,
+    MicroSecs = float(Elapsed - Compensate) / M#micro.outer_loops,
     [{title, M#micro.str},
      {tt1, M#micro.tt1},
      {function, M#micro.function},
      {weight_percentage, M#micro.weight},
      {loops, M#micro.loops},
      {microsecs,MicroSecs},
-     {estones, (M#micro.weight * M#micro.weight * ?STONEFACTOR) div MicroSecs},
+     {estones, (M#micro.weight * M#micro.weight * ?STONEFACTOR) / MicroSecs},
      {gcs, GC1 - GC0},
-     {kilo_word_reclaimed, (Words1 - Words0) div 1000},
-     {kilo_reductions, Reds div 1000},
+     {kilo_word_reclaimed, (Words1 - Words0) / 1000},
+     {kilo_reductions, Reds / 1000},
      {gc_intensity, gci(Elapsed, GC1 - GC0, Words1 - Words0)}].
 
 

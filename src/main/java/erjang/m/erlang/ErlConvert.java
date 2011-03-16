@@ -83,23 +83,27 @@ public class ErlConvert {
 		EBinary bin = term_to_binary(obj);
 		return ERT.box(bin.byteSize());
 	}
-	
+
 	@BIF static ETuple2 split_binary(EObject bin, EObject idx) {
-		EBinary b;
+		EBitString b;
 		ESmall i;
-		if ((b=bin.testBinary()) == null 
+		if ((b=bin.testBitString()) == null
 			|| ((i=idx.testSmall()) == null)
-			|| i.value < 0 
-			|| i.value > b.bitSize()) {
+			|| i.value < 0
+			|| i.value > b.byteSize()) {
 			throw ERT.badarg(bin);
 		}
-		
-		long total = b.bitSize();
+
 		long split = i.value*8;
 		return new ETuple2(b.substring(0, split),
-						   b.substring(split, total-split));
+						   b.substring(split));
+
+		/* more efficient, but works only for EBinary */
+
+		// return new ETuple2(b.sub_binary(0, i.value), 
+		//    b.sub_binary(i.value, b.byteSize()-i.value));		
 	}
-	
+
 	@BIF
 	public static ESeq fun_to_list(EObject fun) {
 		return EString.fromString(fun.toString());
@@ -241,17 +245,16 @@ public class ErlConvert {
 		EBinary bin = obj.testBinary();
 		ESmall s = start.testSmall();
 		ESmall e = stop.testSmall();
-		if (bin == null || s==null||e==null)
+		if (bin == null || s==null || e==null)
 			throw ERT.badarg(obj,start,stop);
 
 		int idx0start = s.value-1;
 		int len = e.value-s.value+1;
-		
+
 		if (idx0start < 0 || len < 0 || (idx0start + len) > bin.byteSize())
 			throw ERT.badarg(obj, start, stop);
-		
-		// TODO: use raw data, here we're copying
-		return EString.make(bin.getByteArray(), idx0start, len);
+
+		return EString.make(bin, idx0start, len);
 	}
 
 	static private class BARR extends ByteArrayOutputStream {

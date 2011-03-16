@@ -32,6 +32,8 @@ import java.util.List;
 import java.util.TimeZone;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicStampedReference;
 
 import kilim.Pausable;
 import kilim.Task;
@@ -125,14 +127,7 @@ public class ErlBif {
 	}
 	
 	@BIF
-	static ESeq binary_to_list(EObject val) {
-		EBinary bin;
-		if ((bin=val.testBinary()) == null) throw ERT.badarg(val);
-		return EString.make(bin);
-	}
-
-	@BIF
-	static EBinary list_to_binary(EObject val) {
+	public static EBinary list_to_binary(EObject val) {
 		EString es;
 		if ((es = val.testString()) != null) { 
 			return es.asBitString();
@@ -268,30 +263,61 @@ public class ErlBif {
 		return proc.self_handle();
 	}
 
+    private static final AtomicStampedReference<ETuple> cachedDate = new AtomicStampedReference(null, 0);
+	static final int MILLIS_PER_MINUTE = 60 * 1000;
+
 	@BIF
 	static public ETuple date() {
+		// Calculating the date using GregorianCalendar is rather slow, so we cache.
+		// As stamp, we use 'midnight at the end of the day', in minutes since Epoch.
+	    long millis = System.currentTimeMillis();
+	    int curMinutes = (int)(millis / MILLIS_PER_MINUTE);
+		int[] cacheValidUntilMinutes = new int[1];
+		ETuple cachedResult = cachedDate.get(cacheValidUntilMinutes);
+		if (curMinutes < cacheValidUntilMinutes[0]  && cachedResult != null) { // Still valid
+			return cachedResult;
+		}
+
+		// Cache is invalid.
+		// Calculate the current date:
 		GregorianCalendar cal = new GregorianCalendar();
 		int year = cal.get(Calendar.YEAR);
 		int month = cal.get(Calendar.MONTH)+1;
 		int day = cal.get(Calendar.DAY_OF_MONTH);
-		
-		return ETuple.make(ERT.box(year), ERT.box(month), ERT.box(day));
+
+		ETuple result = ETuple.make(ERT.box(year), ERT.box(month), ERT.box(day));
+
+		// Calculate valid-until, i.e. next midnight:
+		cal.add(Calendar.DAY_OF_YEAR, 1);
+		cal.set(Calendar.HOUR, 0);
+		cal.set(Calendar.MINUTE, 0);
+		cal.set(Calendar.SECOND, 0);
+		cal.set(Calendar.MILLISECOND, 0);
+		int newValidUntilMinutes =  (int)(cal.getTime().getTime() / MILLIS_PER_MINUTE);
+		// Update cache (or try to):
+		cachedDate.weakCompareAndSet(cachedResult, result,
+									 cacheValidUntilMinutes[0], newValidUntilMinutes);
+
+		return result;
 	}
 
 	@BIF
 	static public ETuple time() {
 		GregorianCalendar cal = new GregorianCalendar();
-		int year = cal.get(Calendar.HOUR_OF_DAY);
-		int month = cal.get(Calendar.MINUTE);
-		int day = cal.get(Calendar.SECOND);
+		int hour   = cal.get(Calendar.HOUR_OF_DAY);
+		int minute = cal.get(Calendar.MINUTE);
+		int second = cal.get(Calendar.SECOND);
 		
-		return ETuple.make(ERT.box(year), ERT.box(month), ERT.box(day));
+		return ETuple.make(ERT.box(hour), ERT.box(minute), ERT.box(second));
 	}
 
 	@BIF
-	
-	static public EString integer_to_list(EObject num) {
-		return new EString(num.toString());
+	static public EString integer_to_list(EObject obj) {
+		EInteger num;
+		if ((num = obj.testInteger()) != null) {
+			return new EString(num.toString());
+		}
+		throw ERT.badarg(obj);
 	}
 
 	@BIF
@@ -312,7 +338,7 @@ public class ErlBif {
 			ESeq s = EString.make(list);
 			return ERT.loopkup_pid(s);
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(obj);
 	}
 
 	@BIF
@@ -322,7 +348,7 @@ public class ErlBif {
 		if ((pid = obj.testPID()) != null) {
 			return pid.getName();
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(obj);
 	}
 
 	@BIF
@@ -332,7 +358,7 @@ public class ErlBif {
 		if ((port = obj.testPort()) != null) {
 			return port.getName();
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(obj);
 	}
 
 	@BIF
@@ -342,7 +368,7 @@ public class ErlBif {
 		if ((value = obj.testFloat()) != null) {
 			return value.to_list();
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(obj);
 	}
 
 	@BIF
@@ -476,7 +502,7 @@ public class ErlBif {
 	static public EObject element(EObject idx, EObject tup) {
 		ESmall i = idx.testSmall();
 		ETuple t = tup.testTuple();
-		if (i == null || t == null || i.value > t.arity()) {
+		if (i == null || t == null || i.value < 1 || i.value > t.arity()) {
 			throw ERT.badarg(idx, tup);
 		}
 
@@ -740,7 +766,7 @@ public class ErlBif {
 		if ((n1 = v1.testNumber()) != null) {
 			return n1.negate();
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(v1);
 	}
 
 	@BIF(name = "-", type=Type.GUARD)
@@ -905,7 +931,7 @@ public class ErlBif {
 		if ((n1 = v1.testFloat()) != null) {
 			return trunc(n1.value);
 		}
-		throw ERT.badarg();
+		throw ERT.badarg(v1);
 	}
 
 	@BIF
@@ -1023,13 +1049,11 @@ public class ErlBif {
 	}
 
 	@BIF(name = "now")
-	
 	static public ETuple3 now() {
-
-		long now = System.currentTimeMillis();
-		long megas = now / 1000000000;
-		long secs = ((now % 1000000000) / 1000);
-		long micros = (now % 1000) * 1000;
+		long now = now_micros();
+		int micros = (int)(now % 1000000); now /= 1000000;
+		int secs   = (int)(now % 1000000); now /= 1000000;
+		int megas  = (int)now;
 
 		ETuple3 res = new ETuple3();
 
@@ -1037,9 +1061,28 @@ public class ErlBif {
 		res.elem2 = ERT.box(secs);
 		res.elem3 = ERT.box(micros);
 
-		//System.out.println("now() => "+res);
-		
 		return res;
+	}
+
+	final static AtomicLong latest_now = new AtomicLong();
+	final static long micros_from_epoch_to_nanotime =
+		System.currentTimeMillis() * 1000 - System.nanoTime() / 1000;
+
+	static long now_micros() {
+		/* now() must fulfill:
+		 * - Any return value approximates the current time.
+		 * - The return values are strictly increasing (and thus unique).
+		 * We ensure the latter by (a) always increasing latest_now,
+		 * (b) always returning what we set it to.
+		 */
+		long micros = System.nanoTime() / 1000 + micros_from_epoch_to_nanotime;
+		long prev;
+		while ((prev = latest_now.get()) < micros) {
+			if (latest_now.compareAndSet(prev,micros)) {
+				return micros;
+			}
+		}
+		return latest_now.incrementAndGet();
 	}
 
 	// tests
@@ -1078,7 +1121,7 @@ public class ErlBif {
 		{
 			EBinary b;
 			if ((b = o.testBinary()) == null)
-				throw ERT.badarg();
+				throw ERT.badarg(o);
 			
 			return ERT.box(b.byteSize());
 		}
@@ -1163,6 +1206,19 @@ public class ErlBif {
 		return ERT.guard(a1.erlangCompareTo(a2) >= 0);
 	}
 
+	@BIF(name = ">")
+	public static EAtom gt(EObject v1, EObject v2) {
+		return ERT.box(v1.erlangCompareTo(v2) > 0);
+	}
+	@BIF(name = ">")
+	public static EAtom gt(EObject v1, ESmall v2) {
+		return ERT.box(v1.erlangCompareTo(v2) > 0);
+	}
+	@BIF(name = ">")
+	public static EAtom gt(ESmall v1, EObject v2) {
+		return ERT.box(v1.erlangCompareTo(v2) > 0);
+	}
+
 	@BIF(name = "/=")
 	public static final EAtom is_ne(EObject a1, EObject a2) {
 		boolean eq = a1.erlangEquals(a2);
@@ -1243,7 +1299,7 @@ public class ErlBif {
 	public static EString atom_to_list(EObject atom) {
 		EAtom am = atom.testAtom();
 		if (am == null)
-			throw ERT.badarg();
+			throw ERT.badarg(atom);
 		return new EString(am.getName());
 	}
 
@@ -1390,7 +1446,7 @@ public class ErlBif {
 	@BIF
 	public static ETuple2 load_module(EProc proc, EAtom mod, EBinary bin) {
 		if (mod == null || bin == null)
-			throw ERT.badarg();
+			throw ERT.badarg(mod, bin);
 
 		try {
 			ERT.load_module(mod, bin);
@@ -1414,7 +1470,7 @@ public class ErlBif {
 	@BIF
 	public static ETuple make_tuple(EObject arity, EObject initial) {
 		ESmall sm = arity.testSmall();
-		if (sm == null) throw ERT.badarg(arity, initial);
+		if (sm == null || sm.value < 0) throw ERT.badarg(arity, initial);
 		ETuple et = ETuple.make(sm.value);
 		for (int i = 1; i <= sm.value; i++) {
 			et.set(i, initial);
@@ -1446,7 +1502,7 @@ public class ErlBif {
 	public static ESmall tuple_size(EObject tup) {
 		ETuple t;
 		if ((t = tup.testTuple()) == null)
-			throw ERT.badarg();
+			throw ERT.badarg(tup);
 		return ERT.box(t.arity());
 	}
 
@@ -1462,7 +1518,7 @@ public class ErlBif {
 	public static ESmall byte_size(EObject o) {
 		EBitString bin = o.testBitString();
 		if (bin == null)
-			throw ERT.badarg();
+			throw ERT.badarg(o);
 		return ERT.box(bin.totalByteSize());
 	}
 
@@ -1479,7 +1535,7 @@ public class ErlBif {
 	public static EInteger bit_size(EObject o) {
 		EBitString bin = o.testBitString();
 		if (bin == null)
-			throw ERT.badarg();
+			throw ERT.badarg(o);
 		return ERT.box(bin.bitSize());
 	}
 
@@ -1494,29 +1550,18 @@ public class ErlBif {
 
 	@BIF
 	public static EAtom or(EObject o1, EObject o2) {
-		if (o1==ERT.TRUE) {
-			if (o2==ERT.TRUE || o2==ERT.FALSE) return ERT.TRUE;
-		} else if (o2==ERT.TRUE) {
-			if (o1==ERT.FALSE) return ERT.TRUE;
-		} else if (o1 == ERT.FALSE && o2 == ERT.FALSE) {
-			return ERT.FALSE;
-		}
-		throw ERT.badarg(o1, o2);
+		Boolean b1 = ERT.asBoolean(o1);
+		Boolean b2 = ERT.asBoolean(o2);
+		if (b1==null || b2==null) throw ERT.badarg(o1,o2);
+		return ERT.box(b1.booleanValue() || b2.booleanValue());
 	}
 
 	@BIF
-	public static EAtom and(EObject o1, EObject e2) {
-		return ERT.box((o1 == ERT.TRUE) && (e2 == ERT.TRUE));
-	}
-
-	@BIF(name = "<")
-	public static EAtom lt(EObject v1, EObject v2) {
-		return ERT.box(v1.erlangCompareTo(v2) < 0);
-	}
-
-	@BIF(name = ">")
-	public static EAtom gt(EObject v1, EObject v2) {
-		return ERT.box(v1.erlangCompareTo(v2) > 0);
+	public static EAtom and(EObject o1, EObject o2) {
+		Boolean b1 = ERT.asBoolean(o1);
+		Boolean b2 = ERT.asBoolean(o2);
+		if (b1==null || b2==null) throw ERT.badarg(o1,o2);
+		return ERT.box(b1.booleanValue() && b2.booleanValue());
 	}
 
 	@BIF(type = Type.GUARD, name = "or")
@@ -1538,7 +1583,8 @@ public class ErlBif {
 
 	@BIF
 	public static EAtom not(EObject o1) {
-		return (o1 == ERT.FALSE) ? ERT.TRUE : ERT.FALSE;
+		if  (o1.testBoolean() == null) throw ERT.badarg(o1);
+		return ERT.box(o1 == ERT.FALSE);
 	}
 
 	@BIF
@@ -1578,6 +1624,7 @@ public class ErlBif {
 
 	@BIF(type = Type.GUARD, name = "not")
 	public static EAtom not$g(EObject o1) {
+		if  (o1.testBoolean() == null) return null;
 		return ERT.box(o1 == ERT.FALSE);
 	}
 

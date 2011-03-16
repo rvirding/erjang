@@ -41,10 +41,10 @@ import erjang.driver.IO;
  */
 public class EOutputStream extends ByteArrayOutputStream {
     /** The default initial size of the stream. * */
-    public static final int defaultInitialSize = 2048;
+    public static final int DEFAULT_INITIAL_BUFFER_SIZE = 512;
 
     /** The default increment used when growing the stream. * */
-    public static final int defaultIncrement = 2048;
+    public static final int DEFAULT_BUFFER_INCREMENT = 2048;
 
     // static formats, used to encode floats and doubles
     private static final DecimalFormat eform = new DecimalFormat("e+00;e-00");
@@ -57,7 +57,7 @@ public class EOutputStream extends ByteArrayOutputStream {
      * Create a stream with the default initial size (2048 bytes).
      */
     public EOutputStream() {
-	this(defaultInitialSize);
+	this(DEFAULT_INITIAL_BUFFER_SIZE);
     }
 
     /**
@@ -119,8 +119,8 @@ public class EOutputStream extends ByteArrayOutputStream {
     public void write(final byte b) {
 	if (super.count >= super.buf.length) {
 	    // System.err.println("Expanding buffer from " + this.buf.length
-	    // + " to " + (this.buf.length+defaultIncrement));
-	    final byte[] tmp = new byte[super.buf.length + defaultIncrement];
+	    // + " to " + (this.buf.length+DEFAULT_BUFFER_INCREMENT));
+	    final byte[] tmp = new byte[super.buf.length + DEFAULT_BUFFER_INCREMENT];
 	    System.arraycopy(super.buf, 0, tmp, 0, super.count);
 	    super.buf = tmp;
 	}
@@ -139,15 +139,37 @@ public class EOutputStream extends ByteArrayOutputStream {
     public void write(final byte[] buf) {
 	if (super.count + buf.length > super.buf.length) {
 	    // System.err.println("Expanding buffer from " + super.buf.length
-	    // + " to " + (buf.length + super.buf.lengt + defaultIncrement));
+	    // + " to " + (buf.length + super.buf.lengt + DEFAULT_BUFFER_INCREMENT));
 	    final byte[] tmp = new byte[super.buf.length + buf.length
-		    + defaultIncrement];
+		    + DEFAULT_BUFFER_INCREMENT];
 	    System.arraycopy(super.buf, 0, tmp, 0, super.count);
 	    super.buf = tmp;
 	}
 	System.arraycopy(buf, 0, super.buf, super.count, buf.length);
 	super.count += buf.length;
     }
+
+
+    public void ensureSpace(int space) {
+	if (super.count + space > super.buf.length) {
+	    // System.err.println("Expanding buffer from " + super.buf.length
+	    // + " to " + (buf.length + super.buf.lengt + DEFAULT_BUFFER_INCREMENT));
+	    final byte[] tmp = new byte[super.buf.length + space
+		    + DEFAULT_BUFFER_INCREMENT];
+	    System.arraycopy(super.buf, 0, tmp, 0, super.count);
+	    super.buf = tmp;
+	}
+    }
+
+    /** 'Unsafe' write - doesn't ensure that there's space in the array. */
+    public void raw_write(final byte b) {
+	super.buf[super.count++] = b;
+    }
+    public void raw_write(int b) {
+		super.buf[super.count++] = (byte)b;
+    }
+
+
 
     /**
      * Write the low byte of a value to the stream.
@@ -169,6 +191,10 @@ public class EOutputStream extends ByteArrayOutputStream {
      */
     public void writeN(final byte[] bytes) {
 	write(bytes);
+    }
+
+    public void writeN(final byte[] bytes, int off, int len) {
+		write(bytes, off, len);
     }
 
     /**
@@ -203,8 +229,13 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write2BE(final long n) {
-	write((byte) ((n & 0xff00) >> 8));
-	write((byte) (n & 0xff));
+	write((byte) ((n) >> 8));
+	write((byte) (n));
+    }
+
+    public void raw_write2BE(final long n) {
+	raw_write((byte) ((n) >> 8));
+	raw_write((byte) (n));
     }
 
     /**
@@ -214,10 +245,17 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write4BE(final long n) {
-	write((byte) ((n & 0xff000000) >> 24));
-	write((byte) ((n & 0xff0000) >> 16));
-	write((byte) ((n & 0xff00) >> 8));
-	write((byte) (n & 0xff));
+	write((byte) ((n) >> 24));
+	write((byte) ((n) >> 16));
+	write((byte) ((n) >> 8));
+	write((byte) (n));
+    }
+
+    public void raw_write4BE(int n) {
+	raw_write((byte) ((n) >> 24));
+	raw_write((byte) ((n) >> 16));
+	raw_write((byte) ((n) >> 8));
+	raw_write((byte) (n));
     }
 
     /**
@@ -228,14 +266,14 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write8BE(final long n) {
-	write((byte) (n >> 56 & 0xff));
-	write((byte) (n >> 48 & 0xff));
-	write((byte) (n >> 40 & 0xff));
-	write((byte) (n >> 32 & 0xff));
-	write((byte) (n >> 24 & 0xff));
-	write((byte) (n >> 16 & 0xff));
-	write((byte) (n >> 8 & 0xff));
-	write((byte) (n & 0xff));
+	write((byte) (n >> 56));
+	write((byte) (n >> 48));
+	write((byte) (n >> 40));
+	write((byte) (n >> 32));
+	write((byte) (n >> 24));
+	write((byte) (n >> 16));
+	write((byte) (n >> 8));
+	write((byte) (n));
     }
 
     /**
@@ -260,8 +298,8 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write2LE(final long n) {
-	write((byte) (n & 0xff));
-	write((byte) ((n & 0xff00) >> 8));
+	write((byte) (n));
+	write((byte) ((n) >> 8));
     }
 
     /**
@@ -271,10 +309,10 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write4LE(final long n) {
-	write((byte) (n & 0xff));
-	write((byte) ((n & 0xff00) >> 8));
-	write((byte) ((n & 0xff0000) >> 16));
-	write((byte) ((n & 0xff000000) >> 24));
+	write((byte) (n));
+	write((byte) ((n) >> 8));
+	write((byte) ((n) >> 16));
+	write((byte) ((n) >> 24));
     }
 
     /**
@@ -285,14 +323,14 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the value to use.
      */
     public void write8LE(final long n) {
-	write((byte) (n & 0xff));
-	write((byte) (n >> 8 & 0xff));
-	write((byte) (n >> 16 & 0xff));
-	write((byte) (n >> 24 & 0xff));
-	write((byte) (n >> 32 & 0xff));
-	write((byte) (n >> 40 & 0xff));
-	write((byte) (n >> 48 & 0xff));
-	write((byte) (n >> 56 & 0xff));
+	write((byte) (n));
+	write((byte) (n >> 8));
+	write((byte) (n >> 16));
+	write((byte) (n >> 24));
+	write((byte) (n >> 32));
+	write((byte) (n >> 40));
+	write((byte) (n >> 48));
+	write((byte) (n >> 56));
     }
 
     /**
@@ -335,22 +373,21 @@ public class EOutputStream extends ByteArrayOutputStream {
      *            the string to write.
      */
     public void write_atom(final String atom) {
-    	
 		int len = Math.min(EExternal.maxAtomLength, atom.length());
 		if (len < 256 && (flags & EAbstractNode.dFlagSmallAtoms) != 0)
 		{
-			write1(EExternal.smallAtomTag);
-			write1(len);
-		} else {			
-			write1(EExternal.atomTag);
-			write2BE(atom.length());
+			ensureSpace(1+1+len);
+			raw_write(EExternal.smallAtomTag);
+			raw_write(len);
+		} else {
+		    ensureSpace(1+2+len);
+			raw_write(EExternal.atomTag);
+			raw_write2BE(atom.length());
 		}
 
-		byte[] out = new byte[len];
 		for (int i = 0; i < len; i++) {
-			out[i] = (byte) (atom.charAt(i) & 0xff);
+			raw_write((byte)atom.charAt(i));
 		}
-		writeN(out);
     }
 
     /**
@@ -476,8 +513,9 @@ public class EOutputStream extends ByteArrayOutputStream {
 	 */
 	if ((v & 0xffL) == v) {
 	    // will fit in one byte
-	    write1(EExternal.smallIntTag);
-	    write1(v);
+		ensureSpace(2);
+	    raw_write(EExternal.smallIntTag);
+	    raw_write((int)v);
 	} else {
 	    // note that v != 0L
 	    if (v < 0 && unsigned || v < EExternal.erlMin
@@ -495,8 +533,9 @@ public class EOutputStream extends ByteArrayOutputStream {
 		write1(sign); // sign
 		writeLE(abs, n); // value. obs! little endian
 	    } else {
-		write1(EExternal.intTag);
-		write4BE(v);
+			ensureSpace(5);
+			raw_write(EExternal.intTag);
+			raw_write4BE((int)v);
 	    }
 	}
     }
@@ -574,7 +613,7 @@ public class EOutputStream extends ByteArrayOutputStream {
      */
     public void write_list_head(final int arity) {
 	if (arity == 0) {
-	    write_nil();
+	    write_nil(); // Is this correct?
 	} else {
 	    write1(EExternal.listTag);
 	    write4BE(arity);
@@ -758,6 +797,21 @@ public class EOutputStream extends ByteArrayOutputStream {
 	}
     }
 
+	public void write_string(byte[] data, int off, int len) {
+	    if (len <= 65535) { // 8-bit string
+			ensureSpace(1+2+len);
+			raw_write(EExternal.stringTag);
+			raw_write2BE(len);
+			writeN(data, off, len);
+	    } else { // Code as list
+			write_list_head(len);
+			for (int i=off; i<off+len; i++) {
+				write_int(data[i]); // Possible performance improvement?
+			}
+			write_nil();
+	    }
+	}
+
     private boolean is8bitString(final String s) {
 	for (int i = 0; i < s.length(); ++i) {
 	    final char c = s.charAt(i);
@@ -840,6 +894,10 @@ public class EOutputStream extends ByteArrayOutputStream {
 	    poke4BE(saveSizePos, getPos() - saveSizePos);
 	}
     }
+
+    public void write_external_fun(final EAtom module, final EAtom function, final int arity) {
+		write_external_fun(module.getName(), function.getName(), arity);
+	}
 
     public void write_external_fun(final String module, final String function,
 	    final int arity) {

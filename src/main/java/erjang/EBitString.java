@@ -47,7 +47,7 @@ public class EBitString extends EObject {
 	//private final long bits;
 	//protected final long bitOff = 0;
 
-	public EBitString(byte[] data) {
+	protected EBitString(byte[] data) {
 		this(data.clone(), 0, data.length, 0);
 	}
 	
@@ -89,6 +89,7 @@ public class EBitString extends EObject {
 
 	public EBinary testBinary() {
 		if (isBinary()) {
+			assert false : "EBitString is Binary and testBinary is not overridden.";
 			// this should never happen
 			return new EBinary(toByteArray());
 		}
@@ -136,10 +137,7 @@ public class EBitString extends EObject {
 		
 		int data_len = in_len - (extra>0 ? 1 : 0);
 		
-		return new EBitString(data, 
-					0, 
-					data_len,
-					extra);
+		return EBitString.make(data, 0, data_len, extra);
 	}
 
 	@Override
@@ -214,7 +212,7 @@ public class EBitString extends EObject {
 	}
 
 	public static EBitString makeByteOffsetTail(EBitString org, int byteOff) {
-	    return new EBitString(org.data, org.data_offset+byteOff, org.byte_size-byteOff, org.extra_bits);
+	    return EBitString.make(org.data, org.data_offset+byteOff, org.byte_size-byteOff, org.extra_bits);
 	}
 
 	protected EBitString(byte[] data, int byte_off, int byte_len, int extra_bits) {
@@ -224,6 +222,9 @@ public class EBitString extends EObject {
 		this.extra_bits = extra_bits;
 
 		if (data.length < byte_off + byte_len + (extra_bits>0?1:0)) {
+			throw new IllegalArgumentException();
+		}
+		if (extra_bits<0 || extra_bits>=8) {
 			throw new IllegalArgumentException();
 		}
 	}
@@ -264,13 +265,15 @@ public class EBitString extends EObject {
 		if (bitOff < 0 || bitOff + bit_len > bitSize()) {
 			throw new IllegalArgumentException("offset out of range");
 		}
-		
+
+		bitOff += byteOffset() * 8;
+
 		int out_full_bytes = (int) (bit_len/8);
 		int extra = (int) (bit_len%8);
 		if (0 == (bitOff % 8)) {
-			return new EBitString(data, 
-					byteOffset() + (int)(bitOff/8), 
-					(int)out_full_bytes, extra);
+			return EBitString.make(data,
+					(int)(bitOff/8),
+					out_full_bytes, extra);
 		}
 		
 		int out_bytes = (int) (out_full_bytes + (extra==0 ? 0 : 1));		
@@ -279,10 +282,10 @@ public class EBitString extends EObject {
 			res[i] = (byte) intBitsAt(bitOff + i*8, 8);
 		}
 		if (extra != 0) {
-			res[(int) out_full_bytes] = 
-				(byte) (intBitsAt(bitOff + bit_len - extra, extra) << (7-extra));
+			res[(int) out_full_bytes] =
+				(byte) (intBitsAt(bitOff + bit_len - extra, extra) << (8-extra));
 		}
-		return new EBitString(res, 0, (int) out_full_bytes, extra);
+		return EBitString.make(res, 0, (int) out_full_bytes, extra);
 	}
 
 	public int bitAt(long bitPos) {
@@ -329,7 +332,6 @@ public class EBitString extends EObject {
 
 			bitLength -= len;
 			bitPos += len;
-
 		}
 
 		assert ((bitPos & 0x07) == 0);
@@ -353,7 +355,7 @@ public class EBitString extends EObject {
 			int len = bitLength;
 
 			// the byte
-			int val = 0x0ff & (int) data[(int) (bitPos >> 3)];
+			int val = 0x0ff & (int) data[pos];
 			res <<= bitLength;
 			res |= val >> (8 - len);
 
@@ -364,7 +366,76 @@ public class EBitString extends EObject {
 		assert (bitLength == 0);
 
 		return res;
+	}
 
+
+	public int intLittleEndianBitsAt(long bitPos, int bitLength) {
+		if (bitPos + bitLength > this.bitSize()) {
+			throw new IllegalArgumentException(
+					"reading beyond end of BitString");
+		}
+
+		if (bitLength < 0 || bitLength > 32)
+			throw new IllegalArgumentException(
+					"this method can only get 32 bits");
+
+		bitPos += byteOffset() * 8;
+
+		int res = 0;
+		int res_offset = 0;
+
+		// first, get the left-most bits from data[bitPos/8]
+		if ((bitPos & 0x07) != 0) {
+
+			// how many bits from this byte?
+			int len = 8 - (int)(bitPos & 0x07);
+
+			// the byte
+			int val = data[(int) (bitPos >> 3)] & 0x0ff;
+			res = val & ((1 << len) - 1);
+
+			if (bitLength < len) {
+				res >>>= (len - bitLength);
+				return res;
+			}
+
+			res_offset += len;
+			bitLength -= len;
+			bitPos += len;
+		}
+
+		assert ((bitPos & 0x07) == 0);
+
+		// we're getting bytes
+		int pos = (int) (bitPos >> 3);
+		while (bitLength > 7) {
+			res |= (data[pos++] & 0x0ff) << res_offset;
+
+			res_offset += 8;
+			bitPos += 8;
+			bitLength -= 8;
+		}
+
+		assert (bitLength < 8);
+
+		// finally, get the left-most bits from data[bitPos/8]
+		if (bitLength != 0) {
+
+			// how many bits from this byte?
+			int len = bitLength;
+
+			// the byte
+			int val = 0x0ff & (int) data[(int) (bitPos >> 3)];
+			res |= (val >> (8 - len)) << res_offset;
+
+			res_offset += len;
+			bitLength -= len;
+			bitPos += len;
+		}
+
+		assert (bitLength == 0);
+
+		return res;
 	}
 
 	/** Sign extend value of size bits.
@@ -372,6 +443,10 @@ public class EBitString extends EObject {
 	 * @see http://www-graphics.stanford.edu/~seander/bithacks.html#VariableSignExtend
 	 * */
 	static int signExtend(int val, int bits) {
+		// Simpler (but slower?):
+		// int nonbits = 32-bits;
+		// return (val << nonbits) >> nonbits;
+		if (bits==32) return val;
 		int r;      // resulting sign-extended number
 		int m = 1 << (bits - 1); // mask can be pre-computed if b is fixed
 
@@ -382,8 +457,12 @@ public class EBitString extends EObject {
 	}
 	
 	static long signExtend(long val, int bits) {
+		// Simpler (but slower?):
+		// int nonbits = 64-bits;
+		// return (val << nonbits) >> nonbits;
+		if (bits==64) return val;
 		long r;      // resulting sign-extended number
-		long m = 1 << (bits - 1); // mask can be pre-computed if b is fixed
+		long m = 1L << (bits - 1); // mask can be pre-computed if b is fixed
 
 		// val = val & ((1 << bits) - 1);  // (Skip this if bits in x above position b are already zero.)
 		r = (val ^ m) - m;
@@ -472,6 +551,77 @@ public class EBitString extends EObject {
 
 		return res;
 
+	}
+
+	public long longLittleEndianBitsAt(long bitPos, int bitLength) {
+		if (bitPos + bitLength > this.bitSize()) {
+			throw new IllegalArgumentException(
+					"reading beyond end of BitString");
+		}
+
+		if (bitLength < 0 || bitLength > 64)
+			throw new IllegalArgumentException(
+					"this method can only get 64 bits");
+
+		long res = 0;
+		int res_offset = 0;
+
+		bitPos += byteOffset() * 8;
+
+		// first, get the right-most bits from data[bitPos/8]
+		if ((bitPos & 0x07) != 0) {
+
+			// how many bits from this byte?
+			int len = 8 - (int)(bitPos & 0x07);
+
+			// the byte
+			int val =  data[(int) (bitPos >> 3)] & 0x0ff;
+			res = val & ((1 << len) - 1);
+
+			// are we looking for less that len bits?
+			if (bitLength < len) {
+				res >>>= (len - bitLength);
+				return res;
+			}
+
+			res_offset += len;
+			bitLength -= len;
+			bitPos += len;
+		}
+
+		assert ((bitPos & 0x07) == 0);
+
+		// we're getting bytes
+		int pos = (int) (bitPos >> 3);
+		while (bitLength >= 8) {
+			res |= ((long)(data[pos++] & 0x0ff)) << res_offset;
+
+			res_offset += 8;
+			bitPos += 8;
+			bitLength -= 8;
+		}
+
+		assert (bitLength < 8);
+		assert ((bitPos & 0x07) == 0);
+
+		// finally, get the left-most bits from data[bitPos/8]
+		if (bitLength != 0) {
+
+			// how many bits from this byte?
+			int len = bitLength;
+
+			// the byte
+			int val = data[pos] & 0x0ff;
+			res |= (long)(val >> (8 - len)) << res_offset;
+
+			res_offset += len;
+			bitLength -= len;
+			bitPos += len;
+		}
+
+		assert (bitLength == 0);
+
+		return res;
 	}
 
 	@Override
@@ -576,12 +726,13 @@ public class EBitString extends EObject {
 			out.addBinary(data, data_offset, byte_size);
 		} catch (CharCollector.PartialDecodingException e) {
 			int n = e.inputPos;
-			throw new CharCollector.CollectingException(new EBitString(data, data_offset+n, byte_size-n, extra_bits));
+			throw new CharCollector.CollectingException(EBitString.make(data, data_offset+n, byte_size-n, extra_bits));
 		}
 	}
 
 	@Override
 	public void encode(EOutputStream eos) {
+		// TODO: Avoid copying.
 		eos.write_bitstr(toByteArray(), extra_bits==0 ? 0 : 8-extra_bits);
 	}
 

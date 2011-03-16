@@ -24,29 +24,27 @@ import java.io.InputStream;
 import java.net.URL;
 import java.net.URLClassLoader;
 
+import erjang.beam.RamClassRepo;
+
 /**
- * Each module has it's own class loader.
+ * Each module has its own class loader.
  */
 public class EModuleClassLoader extends URLClassLoader {
-	
+    private final RamClassRepo ramClassRepo;
+
 	/**
 	 * @param urls
 	 */
-	public EModuleClassLoader(URL loadFrom) {
+    public EModuleClassLoader(URL loadFrom, RamClassRepo repo) {
 		super(loadFrom == null ? new URL[0] : new URL[] { loadFrom },
 				EObject.class.getClassLoader());
-	}
+		this.ramClassRepo = repo;
+    }
 
-	/**
-	 * @param javaName
-	 * @param classData
-	 * @return
-	 */
-	@SuppressWarnings("unchecked")
-	public <T> Class<? extends T> define(String javaName, byte[] data) {
-		return (Class<? extends T>) super.defineClass(javaName, data, 0,
-				data.length);
-	}
+    public EModuleClassLoader(URL loadFrom) {
+	this(loadFrom, null);
+    }
+
 
 	String ETUPLE_NAME = ETuple.class.getName();
 	String EFUN_NAME = EFun.class.getName();
@@ -64,26 +62,47 @@ public class EModuleClassLoader extends URLClassLoader {
 		}
 
 		if (name.startsWith(EFUN_NAME)) {
-			int arity = Integer.parseInt(name.substring(EFUN_NAME.length()));
-			return EFun.get_fun_class(arity);
+			if (name.endsWith("Exported")) {
+				int num_start  = EFUN_NAME.length();
+				int num_end    = name.length() - "Exported".length();
+				int arity = Integer.parseInt(name.substring(num_start, num_end));
+				return EFun.get_exported_fun_class(arity);
+			} else {
+				int arity = Integer.parseInt(name.substring(EFUN_NAME.length()));
+				return EFun.get_fun_class(arity);
+			}
 		}
-		
+
 		if (name.startsWith("kilim.S_")) {
 			/* Resource names are '/'-separated, no matter the platform. */
 			String classResourceName = name.replace('.', '/') + ".class";
 			InputStream resource = super.getResourceAsStream(classResourceName);
 
-			if (resource == null) {
-				throw new ClassNotFoundException(name, new Error("while loading "+this.getURLs()[0]));
-			}
-			
-			try {
-				byte[] bb = new byte[resource.available()];
+			byte[] bb;
+			if (resource != null) {
+			    try {
+				bb = new byte[resource.available()];
 				resource.read(bb);
-				return ERT.defineClass(EModuleClassLoader.class.getClassLoader(), name, bb, 0, bb.length);
-			} catch (IOException ex) {
+			    } catch (IOException ex) {
 				throw new Error(ex);
+			    }
+			} else if (ramClassRepo != null) {
+			    bb = ramClassRepo.get(name); // Might be null.
+			} else bb = null;
+
+			if (bb == null) {
+			    throw new ClassNotFoundException(name, new Error("while loading "+this.getURLs()[0]));
 			}
+
+			return ERT.defineClass(EModuleClassLoader.class.getClassLoader(), name, bb);
+		}
+
+		if (ramClassRepo != null) {
+		    byte[] data = ramClassRepo.get(name);
+		    if (data != null) {
+			return /*(Class<? extends T>)*/ super.defineClass(name, data, 0,
+								      data.length);
+		    }
 		}
 
 		return super.findClass(name);
