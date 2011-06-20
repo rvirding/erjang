@@ -22,6 +22,8 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 
+import erjang.driver.efile.EFile;
+
 public class Main {
 	public static final String SYSTEM_ARCHITECTURE = "java";
 	public static final String OTP_VERSION = ErjangConfig.getString("erjang.otp.version", "R13B04");
@@ -56,6 +58,10 @@ public class Main {
 	
 	private static String guess_erl_root() {
 
+		if (Main.class.getClassLoader().getResource("bin/start.boot") != null) {
+			return EFile.RESOURCE_PREFIX.substring(0, EFile.RESOURCE_PREFIX.length()-1);
+		}
+		
 		// this logic works on Unixes ... what about windows?
 		String path = System.getenv("PATH");
 		for (String elem : path.split(File.pathSeparator)) {
@@ -76,7 +82,7 @@ public class Main {
 			}
 		}
 		
-		System.err.println("Cannot find OTPROOT directory\n"
+		ERT.log.severe("Cannot find OTPROOT directory\n"
 				+ "Pass -root <dir>, or set environment variable.");
 		System.exit(-1);
 		
@@ -154,8 +160,8 @@ public class Main {
 		
 		System.setProperty("erjang.path", erl_bootstrap_ebindir);
 		
-		if (!(new File(erl_bootstrap_ebindir)).exists()) {
-			System.err.println("No bootstrap classes at: "+erl_bootstrap_ebindir);
+		if (!(new File(erl_bootstrap_ebindir)).exists() && !erl_bootstrap_ebindir.startsWith(EFile.RESOURCE_PREFIX)) {
+			ERT.log.severe("No bootstrap classes at: "+erl_bootstrap_ebindir);
 			System.exit(1);
 		}
 		

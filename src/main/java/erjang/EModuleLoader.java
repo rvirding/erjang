@@ -18,24 +18,20 @@
 
 package erjang;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 import erjang.beam.BeamFileData;
 import erjang.beam.BeamLoader;
-import erjang.beam.Compiler;
 import erjang.beam.EUtil;
-
 import erjang.beam.loader.ErjangBeamDisLoader;
-
+import erjang.driver.efile.ClassPathResource;
 import erjang.util.Progress;
-
-import java.util.List;
-import java.util.ArrayList;
-
-import java.io.IOException;
-import java.io.FileNotFoundException;
-import java.io.File;
-import java.io.InputStream;
-
-import java.net.URL;
 
 /** Handles the part of module loading that involves going from module name,
  *  or module name plus beam file name, to a BeamFileData representation;
@@ -49,7 +45,7 @@ import java.net.URL;
  *  - Module creation: From beam representation to executable module (EModule).
  */
 class EModuleLoader {
-	public static final boolean DEBUG_MODULE_LOAD = ErjangConfig.getBoolean("erjang.debug.load");
+	static final Logger log = Logger.getLogger("erjang.module.load");
 
 	final static BeamLoader beamParser = new ErjangBeamDisLoader();
 
@@ -85,20 +81,20 @@ class EModuleLoader {
 			after = System.currentTimeMillis();
 			loaded_module = load_compiled_module(moduleName, moduleClassLoader);
 		}
-		if (DEBUG_MODULE_LOAD) {
+		if (log.isLoggable(Level.FINE)) {
 			long after_load = System.currentTimeMillis();
-			System.err.print("[");
-			System.err.print(moduleName);
-			System.err.print(":");
-			System.err.print(""+(after-before)+"ms");
-			System.err.print(";"+(after_load-after)+"ms]");
 			if (use_interpreter)
 				acc_int_load += (after_load-after);
 			else
 				acc_load += (after_load-after);
-			System.err.println("("+acc_load+")");
-		Progress.done();
+			log.fine("["
+					+ moduleName
+					+ ":"
+					+ ""+(after-before)+"ms"
+					+ ";"+(after_load-after)+"ms]"
+					+ "("+acc_load+")");
  		}
+		Progress.done();
 
 		return loaded_module;
 	}
@@ -111,6 +107,8 @@ class EModuleLoader {
 		for (File e : loadPath) {
 			File beam = new File(e, n + ".beam");
 			if (beam.exists())
+				return beam;
+			if (ClassPathResource.read_file(beam.getPath()) != null)
 				return beam;
 		}
 
@@ -130,7 +128,7 @@ class EModuleLoader {
 
 	private static void addLoadPaths(List<File> out, String path) {
 		for (String s : path.split(File.pathSeparator)) {
-			File elem = new File(s);
+			File elem = ERT.newFile(s);
 			if (elem.exists() && elem.isDirectory()) {
 				out.add(elem);
 			}
@@ -142,8 +140,8 @@ class EModuleLoader {
 	@SuppressWarnings("unchecked")
 	public static EModule load_compiled_module(String mod, EModuleClassLoader loader) {
 
-		if (DEBUG_MODULE_LOAD) {
- 			System.err.println("EML| load_compiled_module: "+mod+" @ "+loader);
+		if (log.isLoggable(Level.FINE)) {
+ 			log.fine("EML| load_compiled_module: "+mod+" @ "+loader);
 		}
 		
 		String internalName = erjang.beam.Compiler.moduleClassName(mod);

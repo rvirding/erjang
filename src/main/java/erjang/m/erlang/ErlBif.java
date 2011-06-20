@@ -258,7 +258,7 @@ public class ErlBif {
 	
 	static public EPID self(EProc proc) {
 		if (proc == null) {
-			System.out.println("Houston, we have a problem.");
+			log.severe("Houston, we have a problem.");
 		}
 		return proc.self_handle();
 	}
@@ -1862,6 +1862,23 @@ public class ErlBif {
 	static public EObject system_flag(EObject flag_arg, EObject value)
 	{
 		throw new NotImplemented();
+	}
+	
+	
+	static EObject sysmon_pid = ERT.am_undefined;
+	
+	@BIF
+	static public EObject system_monitor(EObject pid, EObject opts) {
+		EPID spid = pid.testPID();
+		if(spid == null) throw ERT.badarg(pid, opts);
+		sysmon_pid = pid;
+		return system_monitor();
+	}
+	
+	@BIF
+	static public EObject system_monitor() {
+		if (log.isLoggable(Level.FINE)) log.fine("system_monitor setting ignored");
+		return new ETuple2(sysmon_pid, ERT.NIL);
 	}
 	
 	@BIF

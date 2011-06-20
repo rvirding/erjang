@@ -18,6 +18,7 @@
 
 package erjang.driver.efile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
@@ -25,6 +26,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
@@ -37,8 +39,11 @@ import java.util.GregorianCalendar;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.locks.Lock;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import kilim.Pausable;
+import erjang.EBinList;
 import erjang.EBinary;
 import erjang.EHandle;
 import erjang.EPort;
@@ -55,7 +60,10 @@ import erjang.driver.IO;
  * select on a file). Select is only supported for sockets (and server sockets).
  */
 public class EFile extends EDriverInstance {
+	
+	static Logger log = Logger.getLogger("erjang.driver.file");
 
+	public static final String RESOURCE_PREFIX = "/~resource/";
 	private static Field FileDescriptor_FD;
 	
 	static {
@@ -172,8 +180,8 @@ public class EFile extends EDriverInstance {
 
 							long written_bytes = IO.writev(fd, iov);
 							
-							if (ERT.DEBUG_EFILE) {
-								System.err.println(""+EFile.this+" :: wrote "+written_bytes);
+							if (log.isLoggable(Level.FINER)) {
+								log.finer(""+EFile.this+" :: wrote "+written_bytes);
 							}
 							
 							free_size += written_bytes;
@@ -473,7 +481,7 @@ public class EFile extends EDriverInstance {
 		public SimpleFileAsync(byte command, String path) {
 			this.command = command;
 			this.name = path;
-			this.file = new File(path);
+			this.file = ERT.newFile(path);
 		}
 
 		@Override
@@ -532,8 +540,8 @@ public class EFile extends EDriverInstance {
 			
 				res_ev[i] = ByteBuffer.allocate(len);
 				
-				if (ERT.DEBUG_EFILE) {
-					System.err.println(EFile.this+" :: pread "+len+" @ "+offsets[i-1]);
+				if (log.isLoggable(Level.FINER)) {
+					log.finer(EFile.this+" :: pread "+len+" @ "+offsets[i-1]);
 				}
 			}
 			
@@ -574,8 +582,8 @@ public class EFile extends EDriverInstance {
 									fd.position(pos);
 									bytes_read = fd.read(res);
 									
-									if (ERT.DEBUG_EFILE) {
-										System.err.println(EFile.this + 
+									if (log.isLoggable(Level.FINER)) {
+										log.finer(EFile.this + 
 															":: did pread "+ bytes_read+ "@"+pos
 															+" into res["+i+"]; missing="+res.remaining());
 									}
@@ -628,8 +636,8 @@ public class EFile extends EDriverInstance {
 				return;
 			}
 			
-			if (ERT.DEBUG_EFILE) 
-			System.err.println(""+this+" :: close");
+			if (log.isLoggable(Level.FINE)) 
+				log.fine(""+this+" :: close");
 
 			//TODO: Flush & check.
 
@@ -722,8 +730,8 @@ public class EFile extends EDriverInstance {
 							
 							int bytes = fd.read(binp);
 
-							if (ERT.DEBUG_EFILE) {
-								System.err.println
+							if (log.isLoggable(Level.FINER)) {
+								log.finer
 								 	(EFile.this + ":: did read "+bytes+" bytes of "+want);
 							}
 							
@@ -775,6 +783,18 @@ public class EFile extends EDriverInstance {
 				reply_posix_error(Posix.ENOENT);
 				return;
 			}
+			
+			if (name.startsWith(RESOURCE_PREFIX)) {
+
+				EBinary data = ClassPathResource.read_file(name);
+				if (data == null) {
+					reply_posix_error(Posix.ENOENT);
+				} else {
+					task.output_from_driver(new EBinList(FILE_RESP_OK_HEADER, data));
+				}
+
+				return;
+			}
 
 			FileAsync d = new FileAsync() {
 				private ByteBuffer binp = null;
@@ -789,7 +809,7 @@ public class EFile extends EDriverInstance {
 
 					// first time only, initialize binp
 					if (binp == null) {
-						File file = new File(name);
+						File file = ERT.newFile(name);
 						try {
 							this.fd = new FileInputStream(file).getChannel();
 						} catch (FileNotFoundException e) {
@@ -957,8 +977,8 @@ public class EFile extends EDriverInstance {
 								fd.position(offsets[cnt]);
 								bytes = fd.write(o);
 								
-								if (ERT.DEBUG_EFILE) {
-									System.err.println(""+EFile.this+" :: wrote "+bytes);
+								if (log.isLoggable(Level.FINE)) {
+									log.fine(""+EFile.this+" :: wrote "+bytes);
 								}
 
 							} catch (IOException e) {
@@ -1016,8 +1036,8 @@ public class EFile extends EDriverInstance {
 			
 			for (int i = 0; i < ev.length; i++) {
 				reply_size += ev[i].remaining();
-				if (ERT.DEBUG_EFILE)
-					System.err.println(""+this+" :: write "+ev[i].remaining());
+				if (log.isLoggable(Level.FINER))
+					log.finer(""+this+" :: write "+ev[i].remaining());
 			}
 			
 			q_mtx.lock();
@@ -1133,8 +1153,8 @@ public class EFile extends EDriverInstance {
 						}
 	
 						fd.position(out_pos);
-						if (ERT.DEBUG_EFILE) {
-							System.err.println(""+EFile.this+" :: seek "+out_pos);
+						if (log.isLoggable(Level.FINE)) {
+							log.fine(""+EFile.this+" :: seek "+out_pos);
 						}
 						
 					} catch (IOException e) {
@@ -1306,7 +1326,11 @@ public class EFile extends EDriverInstance {
 							posix_errno = Posix.EUNKNOWN;
 						}
 					} else {
-						System.setProperty("user.dir", this.name);
+						try {
+							System.setProperty("user.dir", file.getCanonicalPath());
+						} catch (IOException e) {
+							posix_errno = Posix.EUNKNOWN;
+						}
 					}
 				}
 			};
@@ -1395,12 +1419,12 @@ public class EFile extends EDriverInstance {
 				
 				public void run() {
 					boolean compressed = (mode & EFILE_COMPRESSED) > 0;
-					if (compressed && ERT.DEBUG_EFILE) {
-						System.err.println("EFile.open_compressed "+file_name);
+					if (compressed && log.isLoggable(Level.FINE)) {
+						log.fine("EFile.open_compressed "+file_name);
 					}
 					boolean append = (mode & EFILE_MODE_APPEND) > 0;
 					if ((mode & ~(EFILE_MODE_APPEND | EFILE_MODE_READ_WRITE)) > 0) {
-						System.err.println("ONLY APPEND AND READ_WRITE OPTIONS ARE IMPLEMENTED!");
+						log.warning("ONLY APPEND AND READ_WRITE OPTIONS ARE IMPLEMENTED!");
 						throw new NotImplemented();
 					}
 					try {
@@ -1410,7 +1434,7 @@ public class EFile extends EDriverInstance {
 								posix_errno = Posix.EINVAL;
 								return;
 							}
-							System.err.println("COMPRESSED NOT IMPLEMENTED!");
+							log.warning("COMPRESSED NOT IMPLEMENTED!");
 							throw new NotImplemented();
 						} else {
 							switch (mode & EFILE_MODE_READ_WRITE) {
@@ -1443,10 +1467,10 @@ public class EFile extends EDriverInstance {
 					} catch (FileNotFoundException fnfe) {
 						posix_errno = fileNotFound_to_posixErrno(file, mode);
 					} catch (IOException e) {
-						e.printStackTrace(System.err);
+						log.log(Level.WARNING, "failed to open file", e);
 						posix_errno = fileNotFound_to_posixErrno(file, mode);						
 					} catch (IllegalAccessException e) {
-						e.printStackTrace(System.err);
+						log.log(Level.WARNING, "failed to open file", e);
 						posix_errno = fileNotFound_to_posixErrno(file, mode);						
 					}
 				}
@@ -1469,7 +1493,12 @@ public class EFile extends EDriverInstance {
 		case FILE_LSTAT: {
 			
 			final String file_name = IO.strcpy(buf);
-			final File file = new File(file_name);
+			final File file = ERT.newFile(file_name);
+			
+			if (file_name.startsWith(RESOURCE_PREFIX)) {
+				ClassPathResource.fstat(this, file_name);
+				return;
+			}
 			
 			d = new FileAsync() {
 				
@@ -1572,8 +1601,14 @@ public class EFile extends EDriverInstance {
 		case FILE_READDIR: {
 			
 			final String dir_name = IO.strcpy(buf);
+			
+			if (dir_name.startsWith(RESOURCE_PREFIX)) {
+				ClassPathResource.listdir(this, dir_name.substring(RESOURCE_PREFIX.length()));
+				return;
+			}
+			
 			//final File cwd = new File(System.getProperty("user.dir")).getAbsoluteFile();
-			final File dir = new File(/*cwd, */dir_name);
+			final File dir = ERT.newFile(/*cwd, */dir_name);
 			
 			
 			d = new FileAsync() {
@@ -1614,21 +1649,7 @@ public class EFile extends EDriverInstance {
 						return;
 					}
 										
-					for (int i = 0; i < files.length; i++) {
-						ByteBuffer resbuf = ByteBuffer.allocate(files[i].length()+1);
-						resbuf.put(FILE_RESP_OK);
-						resbuf.limit(resbuf.capacity());
-						resbuf.position(1);
-						
-						IO.putstr(resbuf, files[i], false);
-						
-						driver_output2(resbuf, null);
-					}
-					
-					ByteBuffer resbuf = ByteBuffer.allocate(1);
-					resbuf.put(FILE_RESP_OK);
-					driver_output2(resbuf, null);
-					
+					reply_list_directory(files);
 				}
 			};
 			break;
@@ -1636,10 +1657,10 @@ public class EFile extends EDriverInstance {
 		
 		case FILE_RENAME: {
 			final String from_name = IO.getstr(buf, true);
-			final File to_name   = new File(IO.getstr(buf, true));
+			final File to_name   = ERT.newFile(IO.getstr(buf, true));
 			
-			if (ERT.DEBUG_EFILE) 
-				System.err.println(""+this+"rename "+from_name+" -> "+to_name);
+			if (log.isLoggable(Level.FINE))
+				log.fine(""+this+"rename "+from_name+" -> "+to_name);
 			
 			d = new SimpleFileAsync(cmd, from_name) {
 				public void run() {
@@ -1666,7 +1687,7 @@ public class EFile extends EDriverInstance {
 
 		
 		default:
-			System.err.println ("file_output cmd:" + ((int) cmd) + " "
+			log.warning("invalid file_output cmd:" + ((int) cmd) + " "
 			+ EBinary.make(buf));
 			
 			throw new NotImplemented("file_output cmd:" + ((int) cmd) + " "
@@ -1877,6 +1898,23 @@ public class EFile extends EDriverInstance {
 		}
 		return "EFile[name=\""+name+"\";pos="+pos+"]";
 		
+	}
+
+	void reply_list_directory(String[] files) throws Pausable {
+		for (int i = 0; i < files.length; i++) {
+			ByteBuffer resbuf = ByteBuffer.allocate(files[i].length()+1);
+			resbuf.put(FILE_RESP_OK);
+			resbuf.limit(resbuf.capacity());
+			resbuf.position(1);
+			
+			IO.putstr(resbuf, files[i], false);
+			
+			driver_output2(resbuf, null);
+		}
+		
+		ByteBuffer resbuf = ByteBuffer.allocate(1);
+		resbuf.put(FILE_RESP_OK);
+		driver_output2(resbuf, null);
 	}
 	
 }

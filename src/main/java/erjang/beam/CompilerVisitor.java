@@ -33,6 +33,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import kilim.Pausable;
 import kilim.analysis.ClassInfo;
@@ -59,6 +61,7 @@ import erjang.ECons;
 import erjang.EDouble;
 import erjang.EFun;
 import erjang.EInteger;
+import erjang.EBig;
 import erjang.EInternalPID;
 import erjang.EList;
 import erjang.EModuleManager;
@@ -104,7 +107,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	private final ClassVisitor cv;
 	private EAtom module_name;
 	private Type self_type;
-
+	
 	private static final EObject ATOM_field_flags = EAtom.intern("field_flags");
 	private static final EObject ATOM_start = EAtom.intern("start");
 
@@ -141,6 +144,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	static final String GO_DESC = "(" + EPROC_TYPE.getDescriptor() + ")"
 			+ EOBJECT_DESC;
 	static final Type EDOUBLE_TYPE = Type.getType(EDouble.class);
+	static final Type EBIG_TYPE = Type.getType(EBig.class);
 	static final Type ENIL_TYPE = Type.getType(ENil.class);
 	static final Type EATOM_TYPE = Type.getType(EAtom.class);
 	static final Type ETUPLE_TYPE = Type.getType(ETuple.class);
@@ -160,6 +164,7 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 	static final String ETUPLE_NAME = ETUPLE_TYPE.getInternalName();
 	static final String ERT_NAME = ERT_TYPE.getInternalName();
 	static final String EDOUBLE_NAME = EDOUBLE_TYPE.getInternalName();
+	static final String EBIG_NAME    = EBIG_TYPE.getInternalName();
 	static final String EINTEGER_NAME = EINTEGER_TYPE.getInternalName();
 	static final String ENIL_NAME = ENIL_TYPE.getInternalName();
 	static final String ESEQ_NAME = ESEQ_TYPE.getInternalName();
@@ -603,8 +608,8 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 					EFun.ensure(arity);
 	
 					if (is_exported) {
-						if (ERT.DEBUG2)
-							System.err.println("export " + module_name + ":"
+						if (ModuleAnalyzer.log.isLoggable(Level.FINE))
+							ModuleAnalyzer.log.fine("export " + module_name + ":"
 									+ fun_name + "/" + arity);
 						AnnotationVisitor an = fv.visitAnnotation(EXPORT_ANN_TYPE
 								.getDescriptor(), true);
@@ -1675,10 +1680,15 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 					return EATOM_TYPE;
 				}
 
+				// Handle conversions to primitive Java types:
 				if (stack_type.getSort() != Type.OBJECT) {
 					if (value instanceof ESmall) {
 						mv.visitLdcInsn(new Integer(value.asInt()));
 						return Type.INT_TYPE;
+					} else if (value instanceof EBig && stack_type.getSort() == Type.DOUBLE) {
+						push_immediate(value, EBIG_TYPE);
+						mv.visitMethodInsn(INVOKEVIRTUAL, EBIG_NAME, "doubleValue", "()D");
+						return Type.DOUBLE_TYPE;
 					} else if (value instanceof EDouble) {
 						mv.visitLdcInsn(new Double(((EDouble) value).value));
 						return Type.DOUBLE_TYPE;
@@ -3329,8 +3339,8 @@ public class CompilerVisitor implements ModuleVisitor, Opcodes {
 			int freevars, Type returnType, boolean isTailCall, boolean isPausable) {
 		
 		if (isPausable) {
-			if (ModuleAnalyzer.DEBUG_ANALYZE) {
-				System.err.println
+			if (ModuleAnalyzer.log.isLoggable(Level.FINE)) {
+				ModuleAnalyzer.log.fine
 					("not generating go2 (pausable) for "+full_inner);
 			}
 			return;
