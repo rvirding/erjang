@@ -25,6 +25,7 @@ import java.lang.reflect.Modifier;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.Set;
 
 import kilim.Pausable;
@@ -268,16 +269,22 @@ public abstract class EFun extends EObject implements Opcodes {
 		return data;
 	}
 
-	static Map<Integer, Constructor<? extends EFun>> handlers = new HashMap<Integer, Constructor<? extends EFun>>();
+	static Map<String, Constructor<? extends EFun>> handlers = new HashMap<String, Constructor<? extends EFun>>();
+	static final Pattern JAVA_ID = Pattern.compile("([a-z]|[A-Z]|$|_|[0-9])*"); // valid java identifier
 
-    public static EFun get_fun_with_handler(int arity, EFunHandler handler, ClassLoader loader) {
-		Constructor<? extends EFun> h = handlers.get(arity);
+    public static EFun get_fun_with_handler(String module, String function, int arity, EFunHandler handler, ClassLoader loader) {
+    	String signature = module + function + arity;
+		Constructor<? extends EFun> h = handlers.get(signature);
 
 		if (h == null) {
 
 			get_fun_class(arity);
 			
-			String self_type = EFUN_TYPE.getInternalName() + "Handler" + arity;
+			String safe_function = JAVA_ID.matcher(function).matches() ? function : make_valid_java_id(function);
+			StringBuffer sb = new StringBuffer();
+			String self_type = sb.append(EFUN_TYPE.getInternalName())
+								.append(module).append(safe_function)
+								.append("Handler").append(arity).toString();
 
 			ClassWriter cw = new ClassWriter(true);
 			String super_class_name = EFUN_TYPE.getInternalName() + arity;
@@ -285,9 +292,13 @@ public abstract class EFun extends EObject implements Opcodes {
 					super_class_name, null);
 
 			// create handler field
-			FieldVisitor fv = cw.visitField(ACC_PRIVATE, "handler",
-					EFUNHANDLER_TYPE.getDescriptor(), null, null);
-			fv.visitEnd();
+			cw.visitField(ACC_PRIVATE, "handler", EFUNHANDLER_TYPE.getDescriptor(), null, null)
+					.visitEnd();
+			cw.visitField(ACC_PRIVATE | ACC_FINAL, "module_name", EATOM_DESC, null, null)
+					.visitEnd();
+			cw.visitField(ACC_PRIVATE | ACC_FINAL, "function_name", EATOM_DESC, null, null)
+					.visitEnd();
+
 
 			// make constructor
 			MethodVisitor mv = cw.visitMethod(ACC_PUBLIC, "<init>", "("
@@ -295,14 +306,23 @@ public abstract class EFun extends EObject implements Opcodes {
 			mv.visitCode();
 
 			mv.visitVarInsn(ALOAD, 0);
-			mv
-					.visitMethodInsn(INVOKESPECIAL, super_class_name, "<init>",
+			mv.visitMethodInsn(INVOKESPECIAL, super_class_name, "<init>",
 							"()V");
 
 			mv.visitVarInsn(ALOAD, 0);
 			mv.visitVarInsn(ALOAD, 1);
 			mv.visitFieldInsn(PUTFIELD, self_type, "handler", EFUNHANDLER_TYPE
 					.getDescriptor());
+			mv.visitVarInsn(ALOAD, 0);
+			mv.visitLdcInsn(module);
+			mv.visitMethodInsn(INVOKESTATIC, EATOM_TYPE.getInternalName(),
+							   "intern", "(Ljava/lang/String;)Lerjang/EAtom;");
+			mv.visitFieldInsn(PUTFIELD, self_type, "module_name", EATOM_DESC);
+			mv.visitVarInsn(ALOAD, 0);
+			mv.visitLdcInsn(function);
+			mv.visitMethodInsn(INVOKESTATIC, EATOM_TYPE.getInternalName(),
+							   "intern", "(Ljava/lang/String;)Lerjang/EAtom;");
+			mv.visitFieldInsn(PUTFIELD, self_type, "function_name", EATOM_DESC);
 
 			mv.visitInsn(RETURN);
 			mv.visitMaxs(3, 3);
@@ -322,6 +342,7 @@ public abstract class EFun extends EObject implements Opcodes {
 			//CompilerVisitor.make_invoketail_method(cw, self_type, arity, 0);
 			make_invoke_method(cw, self_type, arity);
 			make_go_method(cw, self_type, arity);
+			make_encode_method(cw, self_type, arity);
 
 			cw.visitEnd();
 			byte[] data = cw.toByteArray();
@@ -336,7 +357,7 @@ public abstract class EFun extends EObject implements Opcodes {
 				throw new Error(e);
 			}
 
-			handlers.put(arity, h);
+			handlers.put(signature, h);
 		}
 
 		try {
@@ -459,6 +480,44 @@ public abstract class EFun extends EObject implements Opcodes {
 		mv.visitInsn(ARETURN);
 		mv.visitMaxs(arity + 2, arity + 2);
 		mv.visitEnd();
+	}
+
+	static void make_encode_method(ClassWriter cw, String className, int arity) {
+		MethodVisitor mv = cw.visitMethod(ACC_PUBLIC, "encode", "("+ Type.getDescriptor(EOutputStream.class) +")V", null, null);
+		mv.visitCode();
+
+		mv.visitVarInsn(ALOAD, 1);
+		mv.visitVarInsn(ALOAD, 0);
+		mv.visitFieldInsn(GETFIELD, className, "module_name", EATOM_DESC);
+		mv.visitVarInsn(ALOAD, 0);
+		mv.visitFieldInsn(GETFIELD, className, "function_name", EATOM_DESC);
+		mv.visitLdcInsn(new Integer(arity));
+
+		mv.visitMethodInsn(INVOKEVIRTUAL, Type.getInternalName(EOutputStream.class), "write_external_fun",
+						   "("+EATOM_DESC+EATOM_DESC+"I)V");
+
+		mv.visitInsn(RETURN);
+		mv.visitMaxs(4, 1);
+		mv.visitEnd();
+	}
+
+	private static String make_valid_java_id(CharSequence seq) {
+		StringBuffer sb = new StringBuffer();
+		for (int i = 0; i < seq.length(); i++) {
+			char ch = seq.charAt(i);
+			if ((ch >= 'a' && ch <= 'z') ||
+				(ch >= 'A' && ch <= 'Z') ||
+				(ch >= '0' && ch <= '9') ||
+				ch == '_' || ch == '$') {
+				sb.append(ch);
+			} else {
+				sb.append('_').append('x');
+				if (ch < 0x10) sb.append('0');
+				sb.append(Integer.toHexString(ch).toUpperCase());
+			}
+		}
+
+		return sb.toString();
 	}
 	/*^^^^^^^^^^^^^^^^^^^^ Code generation of EFun{arity}  ^^^^^^^^^^^^^^^^^^*/
 
